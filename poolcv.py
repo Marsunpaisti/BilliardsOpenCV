@@ -2,10 +2,12 @@ import math
 import cv2
 import indexer
 import numpy as np
-
+from plotter import plot_image
+from geometry import line_intersection_point
+from matplotlib import pyplot as plt
 
 def main():
-    img = cv2.imread('pooltable2.png')
+    img = cv2.imread('pooltable1.png')
     h, w, _ = img.shape
     img = cv2.resize(img, (1000, round(h * (1000 / w))))
     lower_color, upper_color = detect_cloth_color(img)
@@ -15,12 +17,7 @@ def main():
     epsilon = cv2.arcLength(hull, True) * 0.001
     approx_hull = cv2.approxPolyDP(hull, epsilon, True)
     simplified_lines = simplify_hull_lines(approx_hull)
-
-    print(
-        f"Approx hull: {approx_hull} {type(approx_hull)} {approx_hull.shape}")
-
-    print(
-        f"Simplified lines: {simplified_lines} {type(simplified_lines)} {simplified_lines.shape}")
+    intersections = calculate_corner_intersections(simplified_lines)
 
     with_contours = cv2.drawContours(
         img.copy(), [largest_contour], -1, (0, 0, 0), 2)
@@ -64,41 +61,41 @@ def main():
         point = p[0]
         cv2.circle(with_major_lines, point, 2, (0, 0, 255), -1)
 
-    #cv2.imshow('with_contours', with_contours)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
-    cv2.imshow('with_hull', with_hull)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    cv2.imshow('with_largest_contour_approx', with_largest_contour_approx)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    cv2.imshow('major_lines', with_major_lines)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    for p in intersections:
+        point = [round(p[0]), round(p[1])]
+        cv2.circle(with_major_lines, point, 4, (0, 255, 0), -1)
+
+    plot_image(with_hull, "Convex hull")
+    plot_image(with_largest_contour_approx, "Slightly simplified hull")
+    plot_image(with_major_lines, "Major lines simplified")
 
 
-def calculate_intersections(hull_lines):
+def calculate_corner_intersections(hull_lines):
+    intersections = []
     prev_point = None
     prev_direction = None
-    for i in range(hull_lines.shape[0]):
-        curr_point = hull_lines[i][0]
-        next_point = hull_lines[(i + 1) % hull_lines.shape[0]]
+    num_pts = hull_lines.shape[0]
+    for i in range(num_pts + 1):
+        curr_point = hull_lines[i % num_pts][0]
+        next_point = hull_lines[(i + 1) % num_pts][0]
         curr_direction = next_point - curr_point
+
         len = np.linalg.norm(curr_direction)
         if (len < 100):
             continue
 
-        if (prev_point == None):
+        if (prev_point is None):
             prev_point = curr_point
             prev_direction = curr_direction
             continue
 
-        intersection = [123, 123]
-
+        intersection = line_intersection_point(prev_point, prev_direction, curr_point, curr_direction)
+        if (intersection is not None):
+            intersections.append(intersection)
         prev_point = curr_point
         prev_direction = curr_direction
 
+    return intersections
 
 def simplify_hull_lines(hull):
     points = []
@@ -137,19 +134,14 @@ def detect_cloth_color(img, hue_width=55, sat_width=45, val_width=210):
     In a well lit image, this will be the cloth
     """
     hsv = cv2.cvtColor(img.copy(), cv2.COLOR_BGR2HSV)
-
-    # cv2.imshow('HSV', hsv)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
-
     h, w, _ = hsv.shape
     mask = np.zeros((h, w, 1), dtype=np.uint8)
     cv2.rectangle(mask, (round(0.2*w), round(0.1*h)),
                   (round(0.8*w), round(0.9*h)), (255, 255, 255), -1)
 
-    # cv2.imshow('Masked HSL', cv2.bitwise_and(hsv, hsv, mask=mask))
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
+
+    plot_image(cv2.bitwise_and(img, img, mask=mask), "Masked area")
+
 
     hist = cv2.calcHist([hsv], [0], mask, [180], [0, 180])
     h_max = indexer.get_index_of_max(hist)[0]
@@ -160,20 +152,18 @@ def detect_cloth_color(img, hue_width=55, sat_width=45, val_width=210):
     hist = cv2.calcHist([hsv], [2], mask, [256], [0, 256])
     v_max = indexer.get_index_of_max(hist)[0]
 
+
     hsv_max = (h_max, s_max, v_max)
     print(f"Most common HSV: {hsv_max}")
 
-    # Create a blank 300x300 black image
+    # Display main HSV as color
     color_image = np.zeros((300, 300, 3), np.uint8)
-    # Fill image with red color(set each pixel to red)
     color_image[:] = hsv_max
     color_image = cv2.cvtColor(color_image, cv2.COLOR_HSV2BGR)
+    plot_image(color_image, "Detected main color")
 
-    # cv2.imshow('Main color', color_image)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
 
-    # define range of blue color in HSV
+    # Range bounds for detected main color
     lower_color = np.array(
         [h_max-hue_width, s_max-sat_width, v_max-val_width])
     upper_color = np.array(
@@ -192,28 +182,13 @@ def get_cloth_contours(img, lower_color, upper_color, filter_radius=5):
     # Threshold the HSV image to get only cloth colors
     mask = cv2.inRange(hsv, lower_color, upper_color)
 
-    cv2.imshow('Mask', mask)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    plot_image(mask, "Masked color")
     # use a median filter to get rid of speckle noise
     median = cv2.medianBlur(mask, filter_radius)
-    """
-    cv2.imshow('Median', median)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    """
     kernel = np.ones((3, 3), np.uint8)
     dilated = cv2.dilate(median, kernel, iterations=5)
-    """
-    cv2.imshow('Dilated', dilated)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    """
     shrunk = cv2.erode(dilated, kernel, iterations=5)
-
-    cv2.imshow('Shrunk', shrunk)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    plot_image(shrunk, "Masked color after processing")
 
     contours, hierarchy = cv2.findContours(
         shrunk, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
